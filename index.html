@@ -775,6 +775,9 @@ table tfoot td { padding: 7px 10px; color: #fff; font-size: 11px; font-weight: 7
       <div class="nav-item" onclick="navigate('usermgmt')">
         <span class="nav-icon">&#128100;</span>User Management
       </div>
+      <div class="nav-item" onclick="navigate('master-import')">
+        <span class="nav-icon">&#9650;</span>Master Import
+      </div>
     </div>
   </nav>
   <div class="sidebar-footer">SFMPL TMS v4 &nbsp;·&nbsp; Supabase Edition</div>
@@ -845,6 +848,7 @@ const auth = {
       masters:            ['ADMIN','OPERATIONS'],
       import:             ['ADMIN'],
       usermgmt:           ['ADMIN'],
+      'master-import':    ['ADMIN'],
       shortcuts:          ['ADMIN','OPERATIONS','ACCOUNTS','REPORTS']
     };
     return (map[page] || []).includes(auth.user.role);
@@ -868,7 +872,7 @@ function navigate(page) {
   state.page = page;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   const items = document.querySelectorAll('.nav-item');
-  const map = {dashboard:0,sales:1,operations:2,dispatch:3,mf:4,unloading:5,profit:6,account:7,pipeline:8,'eway-alerts':9,report:10,'party-ledger':11,'monthly-pl':12,'broker-outstanding':13,masters:14,import:15,usermgmt:16};
+  const map = {dashboard:0,sales:1,operations:2,dispatch:3,mf:4,unloading:5,profit:6,account:7,pipeline:8,'eway-alerts':9,report:10,'party-ledger':11,'monthly-pl':12,'broker-outstanding':13,masters:14,import:15,usermgmt:16,'master-import':17};
   if (items[map[page]]) items[map[page]].classList.add('active');
   const titles = {
     dashboard:'Dashboard',
@@ -888,6 +892,7 @@ function navigate(page) {
     masters:'Master Data',
     import:'Import Data',
     usermgmt:'User Management',
+    'master-import':'Master Import (Admin)',
     shortcuts:'Keyboard Shortcuts'
   };
   document.getElementById('page-title').textContent = titles[page] || page;
@@ -920,6 +925,7 @@ function renderPage(page) {
     masters:             renderMasters,
     import:              renderImport,
     usermgmt:            renderUserMgmt,
+    'master-import':     renderMasterImport,
     shortcuts:           renderShortcuts
   };
   const fn = pages[page];
@@ -1161,7 +1167,7 @@ const SB = {
   // Fetches ALL matching SOs for dropdown — no page limit, no crash risk
   // because we only select the 4 fields the dropdowns actually need.
   async getAllSOsForDropdown(filters) {
-    let query = '?order=so_number.desc&select=id,so_number,party_id,from_id,to_id,unloading_status,mt';
+    let query = '?order=so_number.desc&select=id,so_number,party_id,from_id,to_id,unloading_status';
     if (filters) {
       if (filters.Converted)                          query += '&converted=eq.' + filters.Converted;
       if (filters.Allocated !== undefined)            query += '&allocated=eq.' + (filters.Allocated==='true'||filters.Allocated===true?'true':'false');
@@ -1177,7 +1183,6 @@ const SB = {
       Party_ID:          r.party_id,
       From_ID:           r.from_id,
       To_ID:             r.to_id,
-      MT:                r.mt,
       Unloading_Status:  r.unloading_status
     }));
   },
@@ -1324,7 +1329,7 @@ const SB = {
   async saveProfitData(d) {
     const bilti = parseFloat(d.Bilti_Freight)||0, extra = parseFloat(d.Extra_Chrg)||0;
     const totalRev = bilti+extra, cost = parseFloat(d.Total_Cost)||0, deduct = parseFloat(d.Deduction)||0;
-    const grossProfit = totalRev-cost-deduct;
+    const grossProfit = bilti-cost-deduct;
     const gpSale = totalRev>0 ? Math.round((totalRev-cost)/totalRev*100) : 0;
     const gpPurchase = cost>0 ? Math.round((grossProfit/cost)*100) : 0;
     await sb('profit_master', 'POST', { so_id: d.SO_ID, so_number: d.SO_Number, mf_no: d.MF_No, bilti_freight: bilti, extra_chrg: extra, total_revenue: totalRev, total_cost: cost, deduction: deduct, gross_profit: grossProfit, gp_on_sale: gpSale, gp_on_purchase: gpPurchase, ack_date: d.Ack_Date||null, created_by: d.Created_By||(auth.user?auth.user.username:'admin') });
@@ -1334,8 +1339,8 @@ const SB = {
 
   // ── ACCOUNT ──
   async getMFForAccount() {
-    const mfRows = await sb('mf_master', 'GET', null, '?order=id.desc&select=mf_no,so_id,so_number,lorry_no,advance,balance&limit=2000');
-    const tdRows = await sb('trip_dispatch_master', 'GET', null, '?select=so_id,lorry_no,loading_date,broker_id,broker_acc,broker_ifsc,bal_acc,bal_ifsc&limit=2000');
+    const mfRows = await sb('mf_master', 'GET', null, '?order=id.desc');
+    const tdRows = await sb('trip_dispatch_master', 'GET', null, '');
     const acctRows = await sb('account_master', 'GET', null, '?overall_status=eq.COMPLETED&select=mf_no');
     const completedSet = new Set(acctRows.map(a => String(a.mf_no)));
     const tdMap = {};
@@ -1420,11 +1425,11 @@ const SB = {
     // Date filter already applied at DB level above; JS fallback for edge cases
     if (filt.dateFrom) {
       const from = new Date(filt.dateFrom);
-      rows = rows.filter(r => { if (!r.Loading_Date) return true; return new Date(r.Loading_Date) >= from; });
+      rows = rows.filter(r => { if (!r.Loading_Date) return false; return new Date(r.Loading_Date) >= from; });
     }
     if (filt.dateTo) {
       const to = new Date(filt.dateTo + 'T23:59:59');
-      rows = rows.filter(r => { if (!r.Loading_Date) return true; return new Date(r.Loading_Date) <= to; });
+      rows = rows.filter(r => { if (!r.Loading_Date) return false; return new Date(r.Loading_Date) <= to; });
     }
     return rows;
   },
@@ -1456,9 +1461,9 @@ const SB = {
       sb('trip_dispatch_master', 'GET', null, '?so_id=eq.' + soId),
       sb('mf_master', 'GET', null, '?so_id=eq.' + soId + '&limit=1')
     ]);
-    const so = soRows[0] ? { ...soRows[0], SO_ID: soRows[0].id, SO_Number: soRows[0].so_number, Party_ID: soRows[0].party_id, From_ID: soRows[0].from_id, To_ID: soRows[0].to_id, MT: soRows[0].mt } : null;
+    const so = soRows[0] ? { ...soRows[0], SO_ID: soRows[0].id, SO_Number: soRows[0].so_number, Party_ID: soRows[0].party_id, From_ID: soRows[0].from_id, To_ID: soRows[0].to_id } : null;
     const td = tdRows[0] ? { ...tdRows[0], Lorry_No: tdRows[0].lorry_no, Consignor: tdRows[0].consignor, Consignee: tdRows[0].consignee, Broker_ID: tdRows[0].broker_id, Broker_Contact: tdRows[0].broker_contact, Driver_Contact: tdRows[0].driver_contact, GC_No: tdRows[0].gc_no, Eway_Bill_No: tdRows[0].eway_bill_no, Eway_Expiry: tdRows[0].eway_expiry, Final_MT: tdRows[0].final_mt, PKGS: tdRows[0].pkgs } : null;
-    const mf = mfRows[0] ? { ...mfRows[0], MF_ID: mfRows[0].mf_no, Bilti_Freight: mfRows[0].bilti_freight, Total_Cost: mfRows[0].total_cost, LM_D: mfRows[0].l_m_d||0, PM_D: mfRows[0].p_m_d||0 } : null;
+    const mf = mfRows[0] ? { ...mfRows[0], MF_ID: mfRows[0].mf_no, Bilti_Freight: mfRows[0].bilti_freight, Total_Cost: mfRows[0].total_cost } : null;
     return { so, trip: td, disp: td, mf };
   },
 
@@ -1537,17 +1542,15 @@ const SB = {
     if(f.dateFrom) {
       const from = new Date(f.dateFrom);
       rows = rows.filter(r => {
-        const d = r.Loading_Date ? new Date(r.Loading_Date) : null;
-        if (!d) return true;
-        return d >= from;
+        if (!r.Loading_Date) return false; // exclude no-date rows when filter active
+        return new Date(r.Loading_Date) >= from;
       });
     }
     if(f.dateTo) {
       const to = new Date(f.dateTo + 'T23:59:59');
       rows = rows.filter(r => {
-        const d = r.Loading_Date ? new Date(r.Loading_Date) : null;
-        if (!d) return true;
-        return d <= to;
+        if (!r.Loading_Date) return false; // exclude no-date rows when filter active
+        return new Date(r.Loading_Date) <= to;
       });
     }
     return { success: true, data: rows, total: rows.length };
@@ -1851,13 +1854,21 @@ const SB = {
 
   // ── MONTHLY P&L ──
   async getMonthlyPL(year) {
-    const pfRows = await sb('profit_master','GET',null,'?order=created_at.asc&select=so_id,bilti_freight,total_revenue,total_cost,gross_profit,gp_on_sale,created_at');
-    const mfRows = await sb('mf_master','GET',null,'?select=so_id,final_mt');
+    const [pfRows, tdRows, mfRows] = await Promise.all([
+      sb('profit_master','GET',null,'?select=so_id,bilti_freight,total_revenue,total_cost,gross_profit,gp_on_sale&limit=5000'),
+      sb('trip_dispatch_master','GET',null,'?select=so_id,loading_date&limit=5000'),
+      sb('mf_master','GET',null,'?select=so_id,final_mt&limit=5000')
+    ]);
+    const tdMap = {}; tdRows.forEach(r => { tdMap[String(r.so_id)] = r; });
     const mfMap = {}; mfRows.forEach(r => { mfMap[String(r.so_id)] = r; });
     const months = {};
     pfRows.forEach(r => {
-      if (!r.created_at) return;
-      const d = new Date(r.created_at);
+      const td = tdMap[String(r.so_id)] || {};
+      // Use loading_date as the key date (not profit created_at)
+      const dateStr = td.loading_date || null;
+      if (!dateStr) return;
+      const d = new Date(dateStr);
+      if (isNaN(d)) return;
       if (year && d.getFullYear() !== parseInt(year)) return;
       const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
       const label = d.toLocaleDateString('en-IN',{month:'short',year:'numeric'});
@@ -2811,9 +2822,9 @@ async function saveTrip() {
     if (r.success) {
       toast('Trip saved! SO marked as Allocated.');
       showSuccess('Trip Saved', [
-        ['SO Number', soSel.options[soSel.selectedIndex]?.text || soNum || ''],
-        ['Lorry No', document.getElementById('op-lorry')?.value || ''],
-        ['Broker', document.getElementById('op-broker')?.selectedOptions[0]?.text || ''],
+        ['SO Number', document.getElementById('ops-so-select')?.selectedOptions[0]?.text || ''],
+        ['Lorry No', document.getElementById('ops-lorry')?.value || ''],
+        ['Broker', document.getElementById('ops-broker')?.selectedOptions[0]?.text || ''],
         ['Status', 'Allocated ✓']
       ]);
       renderOperations();
@@ -4001,7 +4012,7 @@ function calcProfit() {
   const cost = parseFloat(document.getElementById('pf-total-cost')?.value)||0;
   const deduct = parseFloat(document.getElementById('pf-deduction')?.value)||0;
   const totalRev = bilti + extra;
-  const grossProfit = totalRev - cost - deduct;
+  const grossProfit = bilti - cost - deduct;
   const gpSale = totalRev > 0 ? Math.round((totalRev - cost) / totalRev * 100) : 0;
   const gpPurchase = cost > 0 ? Math.round((grossProfit / cost) * 100) : 0;
   const set = (id, val) => { const el = document.getElementById(id); if(el) el.value = val; };
@@ -4709,11 +4720,11 @@ async function renderAccount() {
       </div>
       <div class="rpt-filter-bar">
         <div class="form-group">
-          <label>From Date</label>
+          <label>From Date <span style="font-size:9px;color:var(--ink3)">(Loading Date)</span></label>
           <input type="date" id="rpt-from">
         </div>
         <div class="form-group">
-          <label>To Date</label>
+          <label>To Date <span style="font-size:9px;color:var(--ink3)">(Loading Date)</span></label>
           <input type="date" id="rpt-to">
         </div>
         <div class="form-group">
@@ -4740,11 +4751,11 @@ async function renderAccount() {
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
           <div class="form-group" style="margin:0;min-width:140px">
-            <label>From Date</label>
+            <label>From Date <span style="font-size:9px;color:var(--ink3)">(Loading Date)</span></label>
             <input type="date" id="dl-from">
           </div>
           <div class="form-group" style="margin:0;min-width:140px">
-            <label>To Date</label>
+            <label>To Date <span style="font-size:9px;color:var(--ink3)">(Loading Date)</span></label>
             <input type="date" id="dl-to">
           </div>
           <div class="form-group" style="margin:0;min-width:160px">
@@ -6515,7 +6526,8 @@ async function renderMonthlyPL() {
       <div class="section-title">
         <span>Monthly P&L Summary</span>
         <select id="pl-year" onchange="loadMonthlyPL()" style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600">
-          ${[curYear, curYear-1, curYear-2].map(y=>`<option value="${y}"${y===curYear?' selected':''}>${y}</option>`).join('')}
+          <option value="2027">2027</option>
+          <option value="2026" selected>2026</option>
           <option value="">All Years</option>
         </select>
       </div>
@@ -6801,8 +6813,155 @@ function renderShortcuts() {
 }
 
 // =============================================
-// BOOT
+// MASTER IMPORT (ADMIN ONLY)
+// One Excel → All tables in one click
 // =============================================
+async function renderMasterImport() {
+  if (!auth.isAdmin()) { setContent('<div style="text-align:center;padding:80px"><div style="font-size:40px">🔒</div><div style="font-weight:700;color:var(--red);margin-top:12px">Admin Only</div></div>'); return; }
+  setContent(`
+    <div class="section-card">
+      <div class="section-title">
+        <span>⬆ Master Import — All Tables (Admin Only)</span>
+        <button class="btn btn-outline btn-sm" onclick="downloadMasterTemplate()">⬇ Download Master Excel Template</button>
+      </div>
+      <div style="background:var(--amber-lt);border:1px solid #f0dc8a;border-left:3px solid var(--amber);border-radius:3px;padding:10px 14px;margin-bottom:16px;font-size:12px;font-weight:600;color:var(--amber)">
+        ⚠ This imports ALL sheets in one click: Broker → SO → Operations → Dispatch → MF → Unloading → Profit.<br>
+        Sheets processed in order. Duplicate keys skipped automatically.<br>
+        <b>Required sheets:</b> BROKER_MASTER, SO_MASTER, OPERATIONS, DISPATCH, MF_ACCOUNTS, UNLOADING, PROFIT_ANALYSIS
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div style="background:var(--canvas);border:1px solid var(--border);border-radius:8px;padding:16px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:6px">📄 Step 1 — Download Template</div>
+          <div style="font-size:11px;color:var(--ink3);margin-bottom:14px">One Excel with 7 sheets. Party &amp; Place masters must already exist in the system.</div>
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px;font-size:11px">
+            ${[['BROKER_MASTER','Broker_Name, Primary_Acc_No, IFSC, Secondary_Acc_No, Secondary_IFSC, Contact_No'],
+               ['SO_MASTER','SO_Number*, Party_Name, From_Place, To_Place, MT, Rate_Given, Rate_Received, Converted'],
+               ['OPERATIONS','SO_Number, Lorry_No, Broker_Name, Consignor, Consignee, Driver_Contact'],
+               ['DISPATCH','SO_Number, Loading_Date (YYYY-MM-DD), GC_No, Eway_Bill_No, Final_MT'],
+               ['MF_ACCOUNTS','MF_No, SO_Number, PMT_Rate, Advance, Diesel, Bill_Pmt…'],
+               ['UNLOADING','SO_Number, Unloading_Date (YYYY-MM-DD)'],
+               ['PROFIT_ANALYSIS','SO_Number, MF_No, Bilti_Freight, Extra_Chrg, Total_Cost, Ack_Date']
+              ].map(([s,c])=>`<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--divider)"><span style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--blue);min-width:130px">${s}</span><span style="color:var(--ink3)">${c}</span></div>`).join('')}
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="downloadMasterTemplate()">⬇ Download Master Template (.xlsx)</button>
+        </div>
+        <div style="background:var(--canvas);border:1px solid var(--border);border-radius:8px;padding:16px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:6px">📤 Step 2 — Upload &amp; Import All</div>
+          <div style="font-size:11px;color:var(--ink3);margin-bottom:14px">Select your filled Excel file. All 7 sheets imported in one click in the correct order.</div>
+          <div id="master-drop-zone"
+            style="border:2px dashed var(--border);border-radius:8px;padding:28px 16px;text-align:center;cursor:pointer;margin-bottom:14px"
+            onclick="document.getElementById('master-file-input').click()"
+            ondragover="event.preventDefault();this.style.borderColor='var(--blue)'"
+            ondragleave="this.style.borderColor='var(--border)'"
+            ondrop="handleMasterFileDrop(event)">
+            <div style="font-size:28px;margin-bottom:8px">📂</div>
+            <div style="font-weight:700;font-size:13px">Drop Master Excel here or click to browse</div>
+            <div style="font-size:11px;color:var(--ink3);margin-top:4px">Excel (.xlsx) only</div>
+          </div>
+          <input type="file" id="master-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleMasterFileSelect(event)">
+          <div id="master-file-info" style="display:none;margin-bottom:12px;font-size:11px;font-weight:700;color:var(--green)"></div>
+          <button id="master-import-btn" class="btn btn-success" style="width:100%;justify-content:center;display:none" onclick="runMasterImport()">
+            ✅ Import All Tables Now
+          </button>
+        </div>
+      </div>
+      <div id="master-import-log" style="display:none;margin-top:20px"></div>
+    </div>`);
+}
+
+function downloadMasterTemplate() {
+  if (typeof XLSX === 'undefined') { toast('Excel library not loaded','error'); return; }
+  const wb = XLSX.utils.book_new();
+  const sheets = [
+    { name:'BROKER_MASTER', headers:['Broker_Name','Primary_Acc_No','IFSC','Secondary_Acc_No','Secondary_IFSC','Contact_No','Status'], sample:[['Sharma Travels','12345678901','SBIN0001234','98765432101','HDFC0001234','9988776655','ACTIVE']] },
+    { name:'SO_MASTER', headers:['SO_Number','Party_Name','From_Place','To_Place','MT','Rate_Given','Given_Labour_Type','Rate_Received','Rec_Labour_Type','Loading_Charge','Converted','Status','Remarks'], sample:[['SFMPL/080/001','Mahindra Logistics','Mumbai','Delhi','100','1200','Exclusive','1000','Exclusive','0','YES','ACTIVE','']] },
+    { name:'OPERATIONS', headers:['SO_Number','Lorry_No','Consignor','Consignee','Destination','Broker_Name','Broker_Acc','Broker_IFSC','Bal_Acc','Bal_IFSC','Broker_Contact','Driver_Contact'], sample:[['SFMPL/080/001','MH12AB1234','ABC Pvt Ltd','XYZ Ltd','Delhi','Sharma Travels','','','','','9876543210','8765432109']] },
+    { name:'DISPATCH', headers:['SO_Number','Loading_Date','GC_No','Invoice_No','Eway_Bill_No','Eway_Expiry','Destination_GC','Items','PKGS','Articles','Final_MT'], sample:[['SFMPL/080/001','2026-01-15','GC123456','INV-001','2304123456789','2026-01-30','GC-DEST-001','Cement Bags','Bags','500','100.000']] },
+    { name:'MF_ACCOUNTS', headers:['MF_No','SO_Number','Lorry_No','Loading_Point','Loading_Clerk','PMT_Rate','Final_MT','L_M','P_M','LM_D','PM_D','Other_Expense','Advance','Diesel','Diesel_Paid','Diesel_Payment_Type','Other','Loading_Labour','Fooding','Con','Unloading','Xerox','Detention','Extra_Point','Other_Chrg','Extra_Labour','Bill_Pmt'], sample:[['MF-001','SFMPL/080/001','MH12AB1234','Gate 3','Ramesh','1200','100.000','0','0','0','0','0','50000','10000','10000','Cash','0','2000','500','300','1500','200','0','0','0','0','1200']] },
+    { name:'UNLOADING', headers:['SO_Number','Unloading_Date'], sample:[['SFMPL/080/001','2026-01-20']] },
+    { name:'PROFIT_ANALYSIS', headers:['SO_Number','MF_No','Bilti_Freight','Extra_Chrg','Total_Cost','Deduction','Ack_Date'], sample:[['SFMPL/080/001','MF-001','120000','0','95000','0','2026-01-25']] }
+  ];
+  sheets.forEach(s => { const ws = XLSX.utils.aoa_to_sheet([s.headers,...s.sample]); XLSX.utils.book_append_sheet(wb,ws,s.name); });
+  XLSX.writeFile(wb,'SFMPL_Master_Import_Template.xlsx');
+  toast('Master template downloaded ✓');
+}
+
+let _masterFileData = null;
+function handleMasterFileDrop(e) { e.preventDefault(); document.getElementById('master-drop-zone').style.borderColor='var(--border)'; const f=e.dataTransfer.files[0]; if(f) processMasterFile(f); }
+function handleMasterFileSelect(e) { const f=e.target.files[0]; if(f) processMasterFile(f); }
+
+function processMasterFile(file) {
+  if (!file.name.match(/\.xlsx?$/i)) { toast('Please select an Excel (.xlsx) file','error'); return; }
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    try {
+      const wb = XLSX.read(ev.target.result,{type:'array',cellDates:true});
+      _masterFileData = wb;
+      const info = document.getElementById('master-file-info');
+      if(info){ info.style.display='block'; info.innerHTML=`✓ Loaded: <b>${file.name}</b> — Sheets: ${wb.SheetNames.map(s=>`<span style="background:var(--blue-lt);color:var(--blue-dk);padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;margin:0 2px">${s}</span>`).join('')}`; }
+      const btn = document.getElementById('master-import-btn'); if(btn) btn.style.display='flex';
+    } catch(err){ toast('Error reading file: '+err,'error'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function sheetToRecords(wb, sheetName) {
+  const ws = wb.Sheets[sheetName]; if(!ws) return [];
+  const rows = XLSX.utils.sheet_to_json(ws,{defval:''});
+  rows.forEach(r => {
+    ['Loading_Date','Eway_Expiry','Unloading_Date','Ack_Date'].forEach(f => {
+      if (r[f] instanceof Date) { const d=r[f]; r[f]=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+      else if (typeof r[f]==='number'&&r[f]>1000) { const d=new Date(Math.round((r[f]-25569)*86400*1000)); r[f]=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+    });
+  });
+  return rows;
+}
+
+async function runMasterImport() {
+  if (!_masterFileData) { toast('No file loaded','error'); return; }
+  const btn = document.getElementById('master-import-btn');
+  btn.disabled=true; btn.textContent='⏳ Importing…';
+  const log = document.getElementById('master-import-log');
+  log.style.display='block';
+  log.innerHTML='<div class="loading"><span class="spinner"></span>Starting import…</div>';
+  const steps=[
+    {sheet:'BROKER_MASTER',   fn:'importBrokerData',    label:'Broker Master'},
+    {sheet:'SO_MASTER',       fn:'importSOData',         label:'Sales Orders'},
+    {sheet:'OPERATIONS',      fn:'importOperationsData', label:'Operations / Trips'},
+    {sheet:'DISPATCH',        fn:'importDispatchData',   label:'Dispatch'},
+    {sheet:'MF_ACCOUNTS',     fn:'importMFData',         label:'MF Accounts'},
+    {sheet:'UNLOADING',       fn:'importUnloadingData',  label:'Unloading'},
+    {sheet:'PROFIT_ANALYSIS', fn:'importProfitData',     label:'Profit Analysis'}
+  ];
+  const results=[];
+  for (const step of steps) {
+    log.innerHTML=`<div class="loading"><span class="spinner"></span>Importing: <b>${step.label}</b>…</div>`;
+    const records=sheetToRecords(_masterFileData,step.sheet);
+    if (!records.length){ results.push({label:step.label,inserted:0,skipped:0,errors:[],missing:true}); continue; }
+    try { const r=await call(step.fn,records); results.push({label:step.label,...r,missing:false}); }
+    catch(e){ results.push({label:step.label,inserted:0,skipped:0,errors:[String(e)],missing:false}); }
+  }
+  const tot_ins=results.reduce((s,r)=>s+(r.inserted||0),0);
+  const tot_err=results.reduce((s,r)=>s+(r.errors||[]).length,0);
+  log.innerHTML=`
+    <div class="section-card" style="border-top:3px solid ${tot_err?'var(--amber)':'var(--green)'}">
+      <div class="section-title" style="color:${tot_err?'var(--amber)':'var(--green)'}">Import Complete — ${tot_ins} records inserted · ${tot_err} errors</div>
+      ${results.map(r=>`
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--divider)">
+          <span style="font-size:16px">${r.missing?'⬜':r.errors&&r.errors.length?'⚠️':'✅'}</span>
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:12px">${r.label}</div>
+            <div style="font-size:11px;color:var(--ink3)">
+              ${r.missing?'Sheet not found — skipped':`<span style="color:var(--green)">✓ ${r.inserted||0} inserted</span>${r.skipped?` · ${r.skipped} skipped`:''}`}
+            </div>
+            ${r.errors&&r.errors.length?`<div style="margin-top:4px;max-height:80px;overflow-y:auto;background:var(--red-lt);border-radius:3px;padding:4px 8px;font-size:10px;color:var(--red)">${r.errors.slice(0,10).join('<br>')}</div>`:''}
+          </div>
+        </div>`).join('')}
+    </div>`;
+  btn.disabled=false; btn.textContent='✅ Import All Tables Now';
+}
+
+
 window.onload = function() {
   var saved = null;
   try { saved = sessionStorage.getItem('tms_auth'); } catch(e) {}
